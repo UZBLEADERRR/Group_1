@@ -19,6 +19,8 @@ import {
   UserCheck,
   Globe,
   Loader2,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import type {
   TrackedObject,
@@ -50,6 +52,9 @@ export default function App() {
 
   // Universal Omni Detection
   const [isOmniScanning, setIsOmniScanning] = useState(false);
+
+  // Quick Questions Collapsed/Expanded State (defaults to false so it never blocks camera on mobile)
+  const [showQuickQuestions, setShowQuickQuestions] = useState(false);
 
   const lastSyncTimeRef = useRef<number>(0);
   const cameraRef = useRef<LiveCameraRef>(null);
@@ -420,83 +425,124 @@ export default function App() {
       </header>
 
       {/* Main Content Overlay Area */}
-      <main className="fixed bottom-[80px] inset-x-0 z-20 pointer-events-none flex flex-col justify-end px-4 mb-2">
-        <div className="max-w-2xl w-full mx-auto max-h-[65vh] overflow-y-auto scrollbar-none pointer-events-auto rounded-3xl">
+      <main className="fixed bottom-[80px] inset-x-0 z-20 pointer-events-none flex flex-col justify-end px-3 mb-1">
+        <div className="max-w-2xl w-full mx-auto overflow-y-auto scrollbar-none pointer-events-auto rounded-3xl">
         {/* TAB 1: CAMERA (Quick Tools Overlay) */}
         {activeTab === 'camera' && (
-          <div className="flex flex-col gap-4">
-            {/* Quick Detected Objects Strip */}
-            <div className="flex items-center gap-2 overflow-x-auto py-2 scrollbar-none px-2 rounded-2xl bg-black/20 backdrop-blur-md">
-              {visibleObjects.length === 0 ? (
-                <div className="text-xs text-slate-200 py-1 font-medium px-2 shadow-sm drop-shadow-md">
-                  Kamerani telefon, noutbuk, stul yoki boshqa buyumlarga qarating...
+          <div className="flex flex-col gap-2">
+            {/* Quick Answer Floating Toast (Dismissible with X) */}
+            {quickAnswer && (
+              <div className="p-3 rounded-2xl bg-slate-900/95 backdrop-blur-xl border border-blue-500/40 text-xs text-blue-100 shadow-2xl flex items-start justify-between gap-2 animate-fadeIn">
+                <div className="flex items-start gap-2 flex-1">
+                  <Sparkles className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed font-medium">{quickAnswer}</span>
                 </div>
-              ) : (
-                visibleObjects.map((obj) => (
-                  <button
-                    key={obj.id}
-                    type="button"
-                    onClick={() =>
-                      setSelectedObjectId(selectedObjectId === obj.id ? null : obj.id)
-                    }
-                    style={{
-                      borderColor: selectedObjectId === obj.id ? obj.color : 'transparent',
-                    }}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900 border text-xs font-semibold shrink-0 transition-all ${
-                      selectedObjectId === obj.id
-                        ? 'ring-2 ring-white/50 text-white'
-                        : 'text-slate-300 hover:bg-slate-800'
-                    }`}
-                  >
-                    <span
-                      className="w-2 h-2 rounded-full"
-                      style={{ backgroundColor: obj.color }}
-                    />
-                    <span className="uppercase">{obj.name}</span>
-                    <span className="text-[10px] text-slate-400 font-mono">
-                      {Math.round(obj.confidence * 100)}%
-                    </span>
-                  </button>
-                ))
-              )}
-            </div>
+                <button
+                  type="button"
+                  onClick={() => setQuickAnswer(null)}
+                  className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 shrink-0"
+                  title="Yopish"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
 
-            {/* Quick Question Chips */}
-            <div className="p-4 rounded-3xl bg-slate-900/85 backdrop-blur-xl border border-slate-700/60 shadow-2xl space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center gap-1.5">
-                  <Compass className="w-3.5 h-3.5 text-blue-400" />
-                  Tezkor Fazoviy Savol
-                </span>
-                <span className="text-[11px] text-slate-400">1 bosishda hisoblash</span>
+            {/* Compact Bottom Toolbar for Camera (Objects & Quick Savol Toggle) */}
+            <div className="flex items-center justify-between gap-2 bg-slate-950/75 backdrop-blur-md p-1.5 rounded-2xl border border-slate-800/80 shadow-lg">
+              {/* Detected Objects Strip */}
+              <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 scrollbar-none flex-1">
+                {visibleObjects.length === 0 ? (
+                  <span className="text-[11px] text-slate-400 px-2 truncate">
+                    Kamerani buyumlarga qarating...
+                  </span>
+                ) : (
+                  visibleObjects.map((obj) => (
+                    <button
+                      key={obj.id}
+                      type="button"
+                      onClick={() =>
+                        setSelectedObjectId(selectedObjectId === obj.id ? null : obj.id)
+                      }
+                      style={{
+                        borderColor: selectedObjectId === obj.id ? obj.color : 'transparent',
+                      }}
+                      className={`flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-900 border text-[11px] font-medium shrink-0 transition-all ${
+                        selectedObjectId === obj.id
+                          ? 'ring-2 ring-white/60 text-white'
+                          : 'text-slate-300 hover:bg-slate-800'
+                      }`}
+                    >
+                      <span
+                        className="w-1.5 h-1.5 rounded-full"
+                        style={{ backgroundColor: obj.color }}
+                      />
+                      <span className="uppercase">{obj.name}</span>
+                    </button>
+                  ))
+                )}
               </div>
 
-              <div className="flex flex-wrap gap-2">
-                {[
-                  'Men kimman? (Yuzimni tani)',
-                  'Qo‘limda suv yoki narsa bormi?',
-                  'Ko‘zimni ochib yumdimmi?',
-                  'Xonada nimalar bor?',
-                  'Eng yaqin narsa nima?',
-                  'Telefon qayerda?',
-                ].map((q, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => handleQuickQuestion(q)}
-                    className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-blue-500/50 hover:bg-slate-800 active:scale-95 text-slate-200 text-xs font-medium transition-all"
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
-
-              {quickAnswer && (
-                <div className="mt-2 p-3 rounded-xl bg-blue-950/30 border border-blue-500/30 text-xs text-blue-100 font-medium leading-relaxed animate-fadeIn">
-                  {quickAnswer}
-                </div>
-              )}
+              {/* Toggle Quick Questions Button (Prevents blocking camera on mobile) */}
+              <button
+                type="button"
+                onClick={() => setShowQuickQuestions((prev) => !prev)}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-semibold shrink-0 transition-all border ${
+                  showQuickQuestions
+                    ? 'bg-blue-600 text-white border-blue-400 shadow-md'
+                    : 'bg-slate-900/90 text-blue-300 border-blue-500/30 hover:bg-slate-800'
+                }`}
+                title="Tezkor savollar panelini ochish/yashirish"
+              >
+                <Compass className="w-3.5 h-3.5" />
+                <span className="text-[11px]">Savollar</span>
+                {showQuickQuestions ? (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronUp className="w-3.5 h-3.5" />
+                )}
+              </button>
             </div>
+
+            {/* Quick Question Chips (Collapsible Drawer, so it NEVER blocks phone camera) */}
+            {showQuickQuestions && (
+              <div className="p-3.5 rounded-2xl bg-slate-900/95 backdrop-blur-xl border border-slate-700/70 shadow-2xl space-y-2 animate-fadeIn">
+                <div className="flex items-center justify-between pb-1 border-b border-slate-800">
+                  <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wide flex items-center gap-1.5">
+                    <Compass className="w-3.5 h-3.5 text-blue-400" />
+                    Tezkor Fazoviy Savollar
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickQuestions(false)}
+                    className="text-[11px] text-slate-400 hover:text-white flex items-center gap-1 px-1.5 py-0.5 rounded-lg hover:bg-slate-800"
+                  >
+                    <span>Yashirish</span>
+                    <ChevronDown className="w-3 h-3" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-1.5 max-h-36 overflow-y-auto pr-1">
+                  {[
+                    'Men kimman? (Yuzimni tani)',
+                    'Qo‘limda suv yoki narsa bormi?',
+                    'Ko‘zimni ochib yumdimmi?',
+                    'Xonada nimalar bor?',
+                    'Eng yaqin narsa nima?',
+                    'Telefon qayerda?',
+                  ].map((q, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => handleQuickQuestion(q)}
+                      className="p-2 rounded-xl bg-slate-950 border border-slate-800 hover:border-blue-500/50 hover:bg-slate-800 active:scale-95 text-slate-200 text-[11px] font-medium transition-all text-left truncate"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
