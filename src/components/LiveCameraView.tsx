@@ -10,8 +10,11 @@ import {
   Maximize2,
   CheckCircle2,
   Zap,
+  UserCheck,
+  Globe,
+  Loader2,
 } from 'lucide-react';
-import type { TrackedObject } from '../types';
+import type { TrackedObject, RecognizedFace } from '../types';
 import {
   detectVideoFrame,
   ClientObjectTracker,
@@ -26,6 +29,12 @@ interface LiveCameraViewProps {
   onSelectObject: (id: string | null) => void;
   onCaptureAnalyze?: (base64: string) => void;
   isAiAnalyzing?: boolean;
+  recognizedFaces?: RecognizedFace[];
+  isFaceRecognitionActive?: boolean;
+  onToggleFaceRecognition?: () => void;
+  onOpenFaceRegistry?: () => void;
+  onTriggerOmniScan?: () => void;
+  isOmniScanning?: boolean;
 }
 
 export interface LiveCameraRef {
@@ -39,6 +48,12 @@ export const LiveCameraView = forwardRef<LiveCameraRef, LiveCameraViewProps>(
     onSelectObject,
     onCaptureAnalyze,
     isAiAnalyzing = false,
+    recognizedFaces = [],
+    isFaceRecognitionActive = false,
+    onToggleFaceRecognition,
+    onOpenFaceRegistry,
+    onTriggerOmniScan,
+    isOmniScanning = false,
   }, ref) {
     const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -198,9 +213,9 @@ export const LiveCameraView = forwardRef<LiveCameraRef, LiveCameraViewProps>(
   return (
     <div className="fixed inset-0 z-0 bg-black flex flex-col items-center justify-center select-none overflow-hidden">
       {/* Top Floating Action Bar */}
-      <div className="absolute top-[80px] inset-x-4 z-20 flex items-center justify-between pointer-events-none">
+      <div className="absolute top-[80px] inset-x-3 z-20 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
         {/* Detection Status Pill */}
-        <div className="pointer-events-auto flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/60 shadow-lg text-xs font-semibold text-slate-200">
+        <div className="pointer-events-auto flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/85 backdrop-blur-md border border-slate-700/60 shadow-lg text-xs font-semibold text-slate-200">
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
@@ -209,19 +224,47 @@ export const LiveCameraView = forwardRef<LiveCameraRef, LiveCameraViewProps>(
           {fps > 0 && <span className="text-slate-400 font-mono text-[11px]">• {fps} FPS</span>}
         </div>
 
-        {/* Camera Controls */}
-        <div className="pointer-events-auto flex items-center gap-2">
+        {/* Camera Controls & Quick Tools */}
+        <div className="pointer-events-auto flex items-center gap-1.5 overflow-x-auto py-1 scrollbar-none">
+          {/* Universal Omni Scan (Detect Everything) */}
+          {onTriggerOmniScan && (
+            <button
+              type="button"
+              onClick={onTriggerOmniScan}
+              disabled={isOmniScanning || !cameraActive}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-600/90 hover:bg-emerald-500 active:scale-95 text-white text-xs font-bold transition-all shadow-lg shadow-emerald-600/25 disabled:opacity-50"
+              title="Xonadagi barcha katta-kichik narsalarni aniqlash"
+            >
+              {isOmniScanning ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Globe className="w-3.5 h-3.5" />
+              )}
+              <span>{isOmniScanning ? 'Skanerlanmoqda...' : '🌐 Omni Skaner'}</span>
+            </button>
+          )}
+
+          {/* Face ID Registry Button */}
+          {onOpenFaceRegistry && (
+            <button
+              type="button"
+              onClick={onOpenFaceRegistry}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-800 active:scale-95 border border-emerald-500/40 text-emerald-300 text-xs font-semibold transition-all shadow-lg"
+              title="Yuzni ro‘yxatga olish va tanish"
+            >
+              <UserCheck className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Face ID</span>
+            </button>
+          )}
+
           {/* Flip Camera Button */}
           <button
             type="button"
             onClick={toggleFacingMode}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900/85 hover:bg-slate-800 active:scale-95 backdrop-blur-md border border-slate-700/60 text-slate-200 text-xs font-semibold transition-all shadow-lg"
+            className="p-2 rounded-full bg-slate-900/85 hover:bg-slate-800 active:scale-95 backdrop-blur-md border border-slate-700/60 text-slate-200 text-xs font-semibold transition-all shadow-lg"
             title="Oldi / Orqa kamerani almashtirish"
           >
             <SwitchCamera className="w-4 h-4 text-blue-400" />
-            <span className="hidden sm:inline">
-              {facingMode === 'environment' ? 'Orqa kamera' : 'Oldi kamera'}
-            </span>
           </button>
 
           {/* AI Multimodal Tahlil */}
@@ -230,10 +273,10 @@ export const LiveCameraView = forwardRef<LiveCameraRef, LiveCameraViewProps>(
               type="button"
               onClick={handleCaptureSnapshot}
               disabled={isAiAnalyzing || !cameraActive}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 active:scale-95 text-white text-xs font-bold transition-all shadow-lg shadow-blue-500/25 disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 active:scale-95 text-white text-xs font-bold transition-all shadow-lg shadow-blue-500/25 disabled:opacity-50"
             >
               <Sparkles className={`w-3.5 h-3.5 ${isAiAnalyzing ? 'animate-spin' : ''}`} />
-              <span>{isAiAnalyzing ? 'Tahlil...' : 'AI Tahlil'}</span>
+              <span>{isAiAnalyzing ? '...' : 'AI'}</span>
             </button>
           )}
         </div>
@@ -275,6 +318,7 @@ export const LiveCameraView = forwardRef<LiveCameraRef, LiveCameraViewProps>(
         {/* REAL DYNAMIC BOUNDING BOXES OVERLAY */}
         {cameraActive && (
           <div className="absolute inset-0 pointer-events-none">
+            {/* 1. Tracked Objects */}
             {visibleTracks.map((obj) => {
               const isSelected = selectedObjectId === obj.id;
               const leftPct = `${obj.box.x * 100}%`;
@@ -293,7 +337,7 @@ export const LiveCameraView = forwardRef<LiveCameraRef, LiveCameraViewProps>(
                     borderColor: obj.color,
                   }}
                   onClick={() => onSelectObject(isSelected ? null : obj.id)}
-                  className={`absolute border-2 rounded-xl pointer-events-auto cursor-pointer transition-all duration-150 ${
+                  className={`absolute border-2 rounded-xl pointer-events-auto cursor-pointer transition-all duration-200 ease-out ${
                     isSelected
                       ? 'ring-4 ring-white bg-blue-500/20 shadow-xl'
                       : 'hover:bg-white/10'
@@ -313,6 +357,49 @@ export const LiveCameraView = forwardRef<LiveCameraRef, LiveCameraViewProps>(
 
                   {/* Center reticle dot */}
                   <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-white ring-2 ring-slate-950 pointer-events-none" />
+                </div>
+              );
+            })}
+
+            {/* 2. RECOGNIZED FACES OVERLAY (High-Tech Emerald Lock) */}
+            {recognizedFaces.map((face, fIdx) => {
+              const leftPct = `${face.box.x * 100}%`;
+              const topPct = `${face.box.y * 100}%`;
+              const widthPct = `${face.box.width * 100}%`;
+              const heightPct = `${face.box.height * 100}%`;
+
+              return (
+                <div
+                  key={`face_${fIdx}_${face.name}`}
+                  style={{
+                    left: leftPct,
+                    top: topPct,
+                    width: widthPct,
+                    height: heightPct,
+                  }}
+                  className="absolute border-2 border-emerald-400 bg-emerald-500/15 rounded-2xl pointer-events-none transition-all duration-300 shadow-2xl shadow-emerald-500/30 ring-2 ring-emerald-400/50 animate-pulse"
+                >
+                  {/* Face Header Pill */}
+                  <div className="absolute -top-9 left-1/2 -translate-x-1/2 px-3 py-1 rounded-xl bg-slate-950/90 border border-emerald-400/80 backdrop-blur-md text-emerald-300 text-xs font-bold flex items-center gap-1.5 shadow-xl whitespace-nowrap">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>{face.name}</span>
+                    <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded-md font-semibold">
+                      Aniqlangan ✓
+                    </span>
+                  </div>
+
+                  {/* Bottom Greeting Pill */}
+                  {face.greeting && (
+                    <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 px-2.5 py-0.5 rounded-lg bg-emerald-950/90 border border-emerald-500/50 text-[11px] font-semibold text-emerald-200 whitespace-nowrap shadow-lg">
+                      {face.greeting}
+                    </div>
+                  )}
+
+                  {/* Four Corner Target Brackets */}
+                  <div className="absolute -top-1 -left-1 w-3.5 h-3.5 border-t-2 border-l-2 border-emerald-300 rounded-tl" />
+                  <div className="absolute -top-1 -right-1 w-3.5 h-3.5 border-t-2 border-r-2 border-emerald-300 rounded-tr" />
+                  <div className="absolute -bottom-1 -left-1 w-3.5 h-3.5 border-b-2 border-l-2 border-emerald-300 rounded-bl" />
+                  <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 border-b-2 border-r-2 border-emerald-300 rounded-br" />
                 </div>
               );
             })}

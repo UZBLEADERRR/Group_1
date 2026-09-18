@@ -169,6 +169,214 @@ Answer the question accurately, directly, and naturally in Uzbek. Keep your resp
   }
 });
 
+// In-Memory Face Registry Store (with persistent session capability)
+interface StoredPerson {
+  id: string;
+  name: string;
+  role: string;
+  photoBase64: string;
+  featuresDescription: string;
+  registeredAt: number;
+}
+
+let registeredPeople: StoredPerson[] = [];
+
+// --- FACE REGISTRATION ---
+apiRouter.post('/faces/register', async (req: Request, res: Response) => {
+  const { name, role, imageBase64 } = req.body;
+  if (!name || !imageBase64) {
+    return res.status(400).json({ error: 'Ism va yuz rasmi talab qilinadi.' });
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  let featuresDescription = 'Ro‘yxatdan o‘tgan shaxs';
+
+  if (apiKey) {
+    try {
+      const { GoogleGenAI } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey });
+      const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+
+      const prompt = `Analyze this person's face photo for facial recognition reference. 
+Describe key distinguishing facial features (hair color/style, eye shape, eyeglasses or not, facial hair, approximate age, facial structure, unique traits) in 2-3 concise sentences.`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [
+          { inlineData: { mimeType: 'image/jpeg', data: cleanBase64 } },
+          { text: prompt },
+        ],
+      });
+      if (response.text) featuresDescription = response.text.trim();
+    } catch (e) {
+      console.warn('[Face Register] Feature description warning:', e);
+    }
+  }
+
+  const newPerson: StoredPerson = {
+    id: 'face_' + Date.now(),
+    name: name.trim(),
+    role: role?.trim() || 'Foydalanuvchi',
+    photoBase64: imageBase64,
+    featuresDescription,
+    registeredAt: Date.now(),
+  };
+
+  registeredPeople.push(newPerson);
+  res.json({ success: true, person: newPerson, total: registeredPeople.length });
+});
+
+// List Registered Faces
+apiRouter.get('/faces/list', (_req: Request, res: Response) => {
+  res.json({
+    people: registeredPeople.map((p) => ({
+      id: p.id,
+      name: p.name,
+      role: p.role,
+      photoBase64: p.photoBase64,
+      registeredAt: p.registeredAt,
+    })),
+  });
+});
+
+// Delete Registered Face
+apiRouter.delete('/faces/:id', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const before = registeredPeople.length;
+  registeredPeople = registeredPeople.filter((p) => p.id !== id);
+  res.json({ success: registeredPeople.length < before });
+});
+
+// --- FACE RECOGNITION IN LIVE FRAME ---
+apiRouter.post('/faces/recognize', async (req: Request, res: Response) => {
+  const { imageBase64 } = req.body;
+  if (!imageBase64) return res.status(400).json({ error: 'Rasm yuborilmadi.' });
+
+  if (registeredPeople.length === 0) {
+    return res.json({ recognized: false, matches: [], message: 'Ro‘yxatdan o‘tgan shaxslar yo‘q.' });
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return res.status(400).json({ error: 'GEMINI_API_KEY topilmadi.' });
+
+  try {
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey });
+    const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+
+    const candidatesSummary = registeredPeople
+      .map((p, idx) => `Person #${idx + 1}: Name="${p.name}", Role="${p.role}", Description="${p.featuresDescription}"`)
+      .join('\n');
+
+    const prompt = `You are an accurate Face Recognition and Person Identification AI.
+Here is the list of registered individuals:
+${candidatesSummary}
+
+Task:
+1. Examine this camera frame to see if any person/face is visible.
+2. If a person is present, compare their face to the registered profiles above.
+3. If they match any registered profile with high certainty, identify them!
+4. Return a JSON object formatted strictly as:
+{
+  "hasFace": boolean,
+  "matches": [
+    {
+      "name": "Matched Person Name",
+      "role": "Role",
+      "confidence": 0.95,
+      "greeting": "Salom, [Name]!",
+      "box": {
+        "x": 0.35, // normalized 0..1 bounding box for their face/head
+        "y": 0.15,
+        "width": 0.30,
+        "height": 0.35
+      }
+    }
+  ]
+}
+If unknown or no face, return "matches": [].`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [
+        { inlineData: { mimeType: 'image/jpeg', data: cleanBase64 } },
+        { text: prompt },
+      ],
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{"matches":[]}');
+    res.json({
+      recognized: (parsed.matches && parsed.matches.length > 0) || false,
+      matches: parsed.matches || [],
+    });
+  } catch (err: any) {
+    console.error('[Face Recognition] Error:', err);
+    res.status(500).json({ error: 'Yuzni aniqlashda xatolik: ' + err.message });
+  }
+});
+
+// --- UNIVERSAL OMNI PERCEPTION (Scan Everything in the scene) ---
+apiRouter.post('/vision/omni-detect', async (req: Request, res: Response) => {
+  const { imageBase64 } = req.body;
+  if (!imageBase64) return res.status(400).json({ error: 'Rasm yuborilmadi.' });
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return res.status(400).json({ error: 'GEMINI_API_KEY topilmadi.' });
+
+  try {
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey });
+    const cleanBase64 = imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+
+    const prompt = `You are a Universal Open-Vocabulary Scene Perception Engine for Augmented Reality.
+Analyze this camera image and identify ALL prominent items, both large and small, in the scene (room, desk, outdoor, workspace).
+Detect everything visible: furniture, devices, stationery, doors, windows, keys, mugs, cables, clothes, wall items, books, bags, accessories, etc.
+Provide their approximate normalized 2D bounding boxes (0 to 1 range: x, y, width, height) and natural Uzbek names.
+
+Return strictly JSON:
+{
+  "objects": [
+    {
+      "name": "Obyekt nomi (o'zbekcha)",
+      "category": "furniture | electronics | tool | stationery | accessory | structure | container | other",
+      "confidence": 0.95,
+      "box": {
+        "x": 0.25,
+        "y": 0.35,
+        "width": 0.2,
+        "height": 0.25
+      },
+      "description": "qisqa tavsif"
+    }
+  ]
+}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [
+        { inlineData: { mimeType: 'image/jpeg', data: cleanBase64 } },
+        { text: prompt },
+      ],
+      config: {
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const parsed = JSON.parse(response.text || '{"objects":[]}');
+    res.json({
+      success: true,
+      objects: parsed.objects || [],
+      count: (parsed.objects || []).length,
+    });
+  } catch (err: any) {
+    console.error('[Omni Detect] Error:', err);
+    res.status(500).json({ error: 'Omni skanerlashda xatolik: ' + err.message });
+  }
+});
+
 apiRouter.post('/objects/add', (req: Request, res: Response) => {
   const { name, x, y } = req.body;
   if (!name) {

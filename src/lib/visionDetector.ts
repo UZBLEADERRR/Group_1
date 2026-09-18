@@ -80,7 +80,57 @@ export interface RawDetection {
 }
 
 /**
- * Run real-time detection on a video element
+ * Calculate Intersection-over-Union (IoU) between two bounding boxes
+ */
+export function calculateIOU(
+  boxA: { x: number; y: number; width: number; height: number },
+  boxB: { x: number; y: number; width: number; height: number }
+): number {
+  const xA = Math.max(boxA.x, boxB.x);
+  const yA = Math.max(boxA.y, boxB.y);
+  const xB = Math.min(boxA.x + boxA.width, boxB.x + boxB.width);
+  const yB = Math.min(boxA.y + boxA.height, boxB.y + boxB.height);
+
+  const interWidth = Math.max(0, xB - xA);
+  const interHeight = Math.max(0, yB - yA);
+  const interArea = interWidth * interHeight;
+
+  const areaA = boxA.width * boxA.height;
+  const areaB = boxB.width * boxB.height;
+  const unionArea = areaA + areaB - interArea;
+
+  if (unionArea <= 0) return 0;
+  return interArea / unionArea;
+}
+
+/**
+ * Non-Maximum Suppression (NMS) to eliminate duplicate/overlapping boxes
+ */
+function applyNMS(detections: RawDetection[], iouThreshold = 0.4): RawDetection[] {
+  // Sort descending by confidence
+  const sorted = [...detections].sort((a, b) => b.confidence - a.confidence);
+  const keep: RawDetection[] = [];
+
+  for (const det of sorted) {
+    let duplicate = false;
+    for (const chosen of keep) {
+      const iou = calculateIOU(det.box, chosen.box);
+      // Suppress if high IoU or one is strongly contained inside another
+      if (iou > iouThreshold) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate) {
+      keep.push(det);
+    }
+  }
+
+  return keep;
+}
+
+/**
+ * Run real-time detection on a video element with NMS
  */
 export async function detectVideoFrame(video: HTMLVideoElement): Promise<RawDetection[]> {
   if (!video || video.readyState < 2 || video.videoWidth === 0) {
@@ -88,12 +138,13 @@ export async function detectVideoFrame(video: HTMLVideoElement): Promise<RawDete
   }
 
   const model = await loadVisionModel();
-  const predictions = await model.detect(video, 10, 0.35);
+  // Filter out low-confidence predictions to eliminate noise jitter
+  const predictions = await model.detect(video, 12, 0.45);
 
   const vw = video.videoWidth;
   const vh = video.videoHeight;
 
-  return predictions.map((pred) => {
+  const rawList = predictions.map((pred) => {
     const [px, py, pw, ph] = pred.bbox;
     // Normalize to 0..1
     const x = Math.max(0, Math.min(1, px / vw));
@@ -115,10 +166,13 @@ export async function detectVideoFrame(video: HTMLVideoElement): Promise<RawDete
       center: { x: cx, y: cy },
     };
   });
+
+  // Apply Non-Maximum Suppression to eliminate double/triple boxes on the same object
+  return applyNMS(rawList, 0.4);
 }
 
 /**
- * Lightweight ByteTrack-style Tracker to assign persistent IDs
+ * Lightweight ByteTrack-style Tracker to assign persistent IDs and lock onto objects
  */
 export class ClientObjectTracker {
   private activeTracks: Map<string, TrackedObject> = new Map();
@@ -128,45 +182,60 @@ export class ClientObjectTracker {
   public update(detections: RawDetection[]): TrackedObject[] {
     const now = Date.now();
     const matchedTrackIds = new Set<string>();
-
     const updatedTracks: TrackedObject[] = [];
 
     for (const det of detections) {
-      // Find closest existing track of same category
+      // Find best match among existing tracks: combination of IoU and centroid distance
       let bestMatchId: string | null = null;
-      let minDistance = 0.25; // max association distance threshold
+      let highestScore = -1;
 
       for (const [id, track] of this.activeTracks.entries()) {
         if (matchedTrackIds.has(id)) continue;
-        if (track.name !== det.name) continue;
+        // Same category or generic object match
+        const isSameCategory = track.category === det.name;
+        if (!isSameCategory) continue;
 
+        const iou = calculateIOU(track.box, det.box);
         const dx = track.center.x - det.center.x;
         const dy = track.center.y - det.center.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
 
-        if (dist < minDistance) {
-          minDistance = dist;
+        // Score: high IoU and low distance
+        const score = (iou * 0.7) + (Math.max(0, 1 - dist / 0.4) * 0.3);
+
+        // Require decent spatial correlation (either IoU > 0.15 or centroid close < 0.25)
+        if ((iou > 0.15 || dist < 0.25) && score > highestScore) {
+          highestScore = score;
           bestMatchId = id;
         }
       }
 
       if (bestMatchId) {
-        // Update existing track
+        // Lock and update existing track with Exponential Moving Average (EMA) for zero-jitter
         matchedTrackIds.add(bestMatchId);
         const existing = this.activeTracks.get(bestMatchId)!;
         const prevCenter = existing.center;
+        const prevBox = existing.box;
 
         const dx = det.center.x - prevCenter.x;
         const dy = det.center.y - prevCenter.y;
-        const isMoved = Math.sqrt(dx * dx + dy * dy) > 0.03;
+        const isMoved = Math.sqrt(dx * dx + dy * dy) > 0.04;
 
-        // Smooth position
-        const smoothX = prevCenter.x * 0.4 + det.center.x * 0.6;
-        const smoothY = prevCenter.y * 0.4 + det.center.y * 0.6;
+        // Smooth box and center: 70% history, 30% new detection -> prevents fluttering
+        const smoothAlpha = 0.35;
+        const smoothX = prevCenter.x * (1 - smoothAlpha) + det.center.x * smoothAlpha;
+        const smoothY = prevCenter.y * (1 - smoothAlpha) + det.center.y * smoothAlpha;
+
+        const smoothBox = {
+          x: prevBox.x * (1 - smoothAlpha) + det.box.x * smoothAlpha,
+          y: prevBox.y * (1 - smoothAlpha) + det.box.y * smoothAlpha,
+          width: prevBox.width * (1 - smoothAlpha) + det.box.width * smoothAlpha,
+          height: prevBox.height * (1 - smoothAlpha) + det.box.height * smoothAlpha,
+        };
 
         existing.center = { x: smoothX, y: smoothY };
-        existing.box = det.box;
-        existing.confidence = det.confidence;
+        existing.box = smoothBox;
+        existing.confidence = Math.max(existing.confidence * 0.8, det.confidence);
         existing.lastSeen = now;
         existing.lostFrames = 0;
         existing.state = isMoved ? 'moving' : 'static';
@@ -206,14 +275,14 @@ export class ClientObjectTracker {
       }
     }
 
-    // Handle lost tracks
+    // Handle lost tracks with hysteresis: keep locked for 16 frames before dropping
     for (const [id, track] of this.activeTracks.entries()) {
       if (!matchedTrackIds.has(id)) {
         track.lostFrames++;
-        if (track.lostFrames > 12) {
+        if (track.lostFrames > 16) {
           // Object truly left camera
           this.activeTracks.delete(id);
-        } else if (track.lostFrames > 3) {
+        } else if (track.lostFrames > 2) {
           track.state = 'occluded';
           updatedTracks.push(track);
         } else {

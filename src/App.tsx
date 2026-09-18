@@ -5,6 +5,7 @@ import { TrackedObjectsPanel } from './components/TrackedObjectsPanel';
 import { SceneGraphPanel } from './components/SceneGraphPanel';
 import { QueryConsole } from './components/QueryConsole';
 import { CapstoneInfoModal } from './components/CapstoneInfoModal';
+import { FaceRegistryModal } from './components/FaceRegistryModal';
 import {
   Sparkles,
   Layers,
@@ -14,12 +15,17 @@ import {
   X,
   Compass,
   CheckCircle,
-  GraduationCap
+  GraduationCap,
+  UserCheck,
+  Globe,
+  Loader2,
 } from 'lucide-react';
 import type {
   TrackedObject,
   SceneGraph,
   QueryResult,
+  RecognizedFace,
+  OmniDetectedObject,
 } from './types';
 
 export default function App() {
@@ -36,9 +42,18 @@ export default function App() {
   const [aiAnalysisResult, setAiAnalysisResult] = useState<any | null>(null);
   const [quickAnswer, setQuickAnswer] = useState<string | null>(null);
   const [isCapstoneModalOpen, setIsCapstoneModalOpen] = useState(false);
+  const [isFaceModalOpen, setIsFaceModalOpen] = useState(false);
+
+  // Face Recognition States
+  const [recognizedFaces, setRecognizedFaces] = useState<RecognizedFace[]>([]);
+  const [isFaceRecognitionActive, setIsFaceRecognitionActive] = useState(true);
+
+  // Universal Omni Detection
+  const [isOmniScanning, setIsOmniScanning] = useState(false);
 
   const lastSyncTimeRef = useRef<number>(0);
   const cameraRef = useRef<LiveCameraRef>(null);
+  const isRecognizingRef = useRef<boolean>(false);
 
   // Sync objects detected by real camera with backend scene engine
   const handleObjectsDetected = useCallback((detectedList: TrackedObject[]) => {
@@ -90,6 +105,125 @@ export default function App() {
   useEffect(() => {
     fetchSceneData();
   }, [fetchSceneData]);
+
+  // Periodic Face Recognition Loop (every 4 seconds)
+  useEffect(() => {
+    if (!isFaceRecognitionActive) return;
+
+    const faceInterval = setInterval(async () => {
+      if (isRecognizingRef.current) return;
+      const frame = cameraRef.current?.captureFrame();
+      if (!frame) return;
+
+      isRecognizingRef.current = true;
+      try {
+        const res = await fetch('/api/faces/recognize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageBase64: frame }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.recognized && data.matches && data.matches.length > 0) {
+            setRecognizedFaces(data.matches);
+          } else {
+            // Keep previous for a bit or clear
+            setRecognizedFaces([]);
+          }
+        }
+      } catch (e) {
+        // Silent error in background face polling
+      } finally {
+        isRecognizingRef.current = false;
+      }
+    }, 3800);
+
+    return () => clearInterval(faceInterval);
+  }, [isFaceRecognitionActive]);
+
+  // Universal Omni-Perception Scan: Detects everything in the room/scene
+  const handleTriggerOmniScan = async () => {
+    const frame = cameraRef.current?.captureFrame();
+    if (!frame) {
+      setQuickAnswer('Kameradan rasm olib bo‘lmadi.');
+      return;
+    }
+
+    setIsOmniScanning(true);
+    setQuickAnswer('Xona va butun atrof-muhit keng qamrovli AI orqali skanerlanmoqda...');
+
+    try {
+      const res = await fetch('/api/vision/omni-detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: frame }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const foundObjects: OmniDetectedObject[] = data.objects || [];
+
+        if (foundObjects.length === 0) {
+          setQuickAnswer('Hech qanday qo‘shimcha obyekt topilmadi.');
+        } else {
+          // Convert to persistent tracked objects with unique colors
+          const PALETTE = ['#38bdf8', '#34d399', '#f472b6', '#a78bfa', '#fbbf24', '#f87171', '#4ade80', '#fb923c'];
+          const now = Date.now();
+
+          const convertedTracks: TrackedObject[] = foundObjects.map((item, idx) => ({
+            id: `omni_${now}_${idx}`,
+            name: item.name,
+            category: item.category || 'general',
+            confidence: item.confidence || 0.9,
+            box: {
+              x: item.box.x,
+              y: item.box.y,
+              width: item.box.width,
+              height: item.box.height,
+            },
+            center: {
+              x: item.box.x + item.box.width / 2,
+              y: item.box.y + item.box.height / 2,
+            },
+            state: 'static',
+            firstSeen: now,
+            lastSeen: now,
+            lostFrames: 0,
+            velocity: { x: 0, y: 0 },
+            history: [{ x: item.box.x + item.box.width / 2, y: item.box.y + item.box.height / 2, timestamp: now }],
+            color: PALETTE[idx % PALETTE.length],
+          }));
+
+          // Merge with current objects
+          setObjects((prev) => {
+            const combined = [...prev, ...convertedTracks];
+            // Sync with backend scene graph
+            fetch('/api/objects/sync', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ objects: combined }),
+            })
+              .then((r) => r.json())
+              .then((d) => {
+                if (d.sceneGraph) setSceneGraph(d.sceneGraph);
+              })
+              .catch(() => {});
+            return combined;
+          });
+
+          setQuickAnswer(`Skanerlash yakunlandi: ${foundObjects.length} ta yangi narsa (mebel, jihozlar, detallar) aniqlandi va sahnaga qo‘shildi!`);
+        }
+      } else {
+        const err = await res.json();
+        setQuickAnswer('Skanerlashda xato: ' + (err.error || 'Server javob bermadi'));
+      }
+    } catch (err: any) {
+      setQuickAnswer('Omni skanerlash xatosi: ' + err.message);
+    } finally {
+      setIsOmniScanning(false);
+    }
+  };
 
   // Handle Gemini Multimodal Frame Analysis
   const handleCaptureAnalyze = async (base64: string) => {
@@ -244,6 +378,12 @@ export default function App() {
         onSelectObject={setSelectedObjectId}
         onCaptureAnalyze={handleCaptureAnalyze}
         isAiAnalyzing={isAiAnalyzing}
+        recognizedFaces={recognizedFaces}
+        isFaceRecognitionActive={isFaceRecognitionActive}
+        onToggleFaceRecognition={() => setIsFaceRecognitionActive((prev) => !prev)}
+        onOpenFaceRegistry={() => setIsFaceModalOpen(true)}
+        onTriggerOmniScan={handleTriggerOmniScan}
+        isOmniScanning={isOmniScanning}
       />
 
       {/* Top Mobile-Friendly Header */}
@@ -333,10 +473,12 @@ export default function App() {
 
               <div className="flex flex-wrap gap-2">
                 {[
+                  'Men kimman? (Yuzimni tani)',
+                  'Qo‘limda suv yoki narsa bormi?',
+                  'Ko‘zimni ochib yumdimmi?',
+                  'Xonada nimalar bor?',
                   'Eng yaqin narsa nima?',
                   'Telefon qayerda?',
-                  'Noutbuk ustidami?',
-                  'Xonada nimalar bor?',
                 ].map((q, idx) => (
                   <button
                     key={idx}
@@ -472,6 +614,31 @@ export default function App() {
       {isCapstoneModalOpen && (
         <CapstoneInfoModal onClose={() => setIsCapstoneModalOpen(false)} />
       )}
+
+      {/* Face Registration & Management Modal */}
+      <FaceRegistryModal
+        isOpen={isFaceModalOpen}
+        onClose={() => setIsFaceModalOpen(false)}
+        captureFrame={() => cameraRef.current?.captureFrame() || null}
+        onFaceRegistered={() => {
+          // Trigger immediate face recognition check
+          if (cameraRef.current) {
+            const frame = cameraRef.current.captureFrame();
+            if (frame) {
+              fetch('/api/faces/recognize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ imageBase64: frame }),
+              })
+                .then((r) => r.json())
+                .then((d) => {
+                  if (d.matches) setRecognizedFaces(d.matches);
+                })
+                .catch(() => {});
+            }
+          }
+        }}
+      />
 
       {/* Sticky Mobile Bottom Navigation */}
       <BottomNavbar

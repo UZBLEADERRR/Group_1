@@ -85,7 +85,7 @@ export interface SceneEvent {
 
 export interface QueryResult {
   question: string;
-  intent: 'location' | 'proximity' | 'relation' | 'history' | 'status' | 'unknown';
+  intent: 'location' | 'proximity' | 'relation' | 'history' | 'status' | 'gemini_vision' | 'unknown';
   answer: string;
   targetObjectId?: string;
   referenceObjectId?: string;
@@ -132,15 +132,28 @@ export interface CameraStatus {
   error: string | null;
 }
 
-export interface SystemStatus {
-  camera: 'connected' | 'disconnected' | 'error' | 'reconnecting';
-  detector: 'idle' | 'running' | 'ready';
-  tracker: 'idle' | 'running' | 'ready';
-  sceneGraph: 'idle' | 'active';
-  fps: number;
-  latencyMs: number;
-  activeObjectsCount: number;
-  lastUpdateTimestamp: number;
-  eventsCount: number;
-  concepts: string[];
+export interface RegisteredFace {
+  id: string;
+  name: string;
+  role?: string;
+  photoBase64: string;
+  featuresDescription?: string;
+  registeredAt: number;
+}
+
+export interface RecognizedFace {
+  name: string;
+  role?: string;
+  confidence: number;
+  greeting?: string;
+  box: BoundingBox;
+}
+
+export interface OmniDetectedObject {
+  id: string;
+  name: string;
+  category: string;
+  confidence: number;
+  box: BoundingBox;
+  description?: string;
 }
