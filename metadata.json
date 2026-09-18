@@ -1,0 +1,7 @@
+{
+  "name": "SmartRoom AI - Capstone G1",
+  "description": "Sejong University Capstone Project G1: Semantic Scene Understanding and Scene-Graph Reasoning System by Group 1.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

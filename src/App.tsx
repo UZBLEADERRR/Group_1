@@ -1,0 +1,484 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { LiveCameraView, type LiveCameraRef } from './components/LiveCameraView';
+import { BottomNavbar, type NavTab } from './components/BottomNavbar';
+import { TrackedObjectsPanel } from './components/TrackedObjectsPanel';
+import { SceneGraphPanel } from './components/SceneGraphPanel';
+import { QueryConsole } from './components/QueryConsole';
+import { CapstoneInfoModal } from './components/CapstoneInfoModal';
+import {
+  Sparkles,
+  Layers,
+  GitFork,
+  MessageSquare,
+  ShieldCheck,
+  X,
+  Compass,
+  CheckCircle,
+  GraduationCap
+} from 'lucide-react';
+import type {
+  TrackedObject,
+  SceneGraph,
+  QueryResult,
+} from './types';
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<NavTab>('camera');
+  const [objects, setObjects] = useState<TrackedObject[]>([]);
+  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
+  const [sceneGraph, setSceneGraph] = useState<SceneGraph>({
+    nodes: [],
+    edges: [],
+    updatedAt: Date.now(),
+  });
+
+  const [isAiAnalyzing, setIsAiAnalyzing] = useState(false);
+  const [aiAnalysisResult, setAiAnalysisResult] = useState<any | null>(null);
+  const [quickAnswer, setQuickAnswer] = useState<string | null>(null);
+  const [isCapstoneModalOpen, setIsCapstoneModalOpen] = useState(false);
+
+  const lastSyncTimeRef = useRef<number>(0);
+  const cameraRef = useRef<LiveCameraRef>(null);
+
+  // Sync objects detected by real camera with backend scene engine
+  const handleObjectsDetected = useCallback((detectedList: TrackedObject[]) => {
+    setObjects(detectedList);
+
+    // Throttle backend sync to once every 1.5 seconds
+    const now = Date.now();
+    if (now - lastSyncTimeRef.current > 1500 && detectedList.length > 0) {
+      lastSyncTimeRef.current = now;
+      fetch('/api/objects/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ objects: detectedList }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.sceneGraph) {
+            setSceneGraph(data.sceneGraph);
+          }
+        })
+        .catch((err) => {
+          console.debug('[Sync] Background sync tick:', err);
+        });
+    }
+  }, []);
+
+  // Fetch initial scene graph from backend
+  const fetchSceneData = useCallback(async () => {
+    try {
+      const [sgRes, objRes] = await Promise.all([
+        fetch('/api/scene-graph'),
+        fetch('/api/objects'),
+      ]);
+      if (sgRes.ok) {
+        const sg = await sgRes.json();
+        setSceneGraph(sg);
+      }
+      if (objRes.ok) {
+        const data = await objRes.json();
+        if (data.objects && data.objects.length > 0 && objects.length === 0) {
+          setObjects(data.objects);
+        }
+      }
+    } catch (err) {
+      console.warn('[App] Fetch error:', err);
+    }
+  }, [objects.length]);
+
+  useEffect(() => {
+    fetchSceneData();
+  }, [fetchSceneData]);
+
+  // Handle Gemini Multimodal Frame Analysis
+  const handleCaptureAnalyze = async (base64: string) => {
+    setIsAiAnalyzing(true);
+    setAiAnalysisResult(null);
+    try {
+      const res = await fetch('/api/vision/gemini-detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: base64 }),
+      });
+      const data = await res.json();
+      if (data.data) {
+        setAiAnalysisResult(data.data);
+      } else if (data.message) {
+        setAiAnalysisResult({ summaryUz: data.message });
+      }
+    } catch (err: any) {
+      console.error('[Gemini] Analysis error:', err);
+      setAiAnalysisResult({
+        summaryUz: 'AI tahlilida xatolik yuz berdi. Iltimos, qayta urinib ko‘ring.',
+      });
+    } finally {
+      setIsAiAnalyzing(false);
+    }
+  };
+
+  // Run Query
+  const handleRunQuery = async (question: string): Promise<QueryResult | null> => {
+    try {
+      // First, try Gemini Vision if we can capture a frame
+      const frameBase64 = cameraRef.current?.captureFrame();
+
+      if (frameBase64) {
+        const askRes = await fetch('/api/vision/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question, imageBase64: frameBase64 }),
+        });
+
+        if (askRes.ok) {
+          const data = await askRes.json();
+          return {
+            question,
+            intent: 'gemini_vision',
+            answer: data.answer,
+            confidence: 0.99,
+            verified: true,
+            corrected: false,
+            groundingDetails: {
+              rule: 'Gemini Multimodal VLM',
+              calculatedMetric: 'Kengaytirilgan Vizual Tahlil',
+              threshold: 'Ochiq lug‘at va harakatlar',
+            },
+            timestamp: Date.now(),
+          };
+        }
+      }
+
+      // Fallback to basic geometric queries if frame fails or no Gemini
+      if (objects.length > 0) {
+        await fetch('/api/objects/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ objects }),
+        });
+      }
+
+      const res = await fetch('/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question }),
+      });
+
+      if (res.ok) {
+        const result: QueryResult = await res.json();
+        if (result.targetObjectId) {
+          setSelectedObjectId(result.targetObjectId);
+        }
+        return result;
+      }
+    } catch (err) {
+      console.warn('[App] Query error:', err);
+    }
+    return null;
+  };
+
+  // Quick 1-tap query right on camera screen
+  const handleQuickQuestion = async (q: string) => {
+    setQuickAnswer('Hisoblanmoqda...');
+    const res = await handleRunQuery(q);
+    if (res) {
+      setQuickAnswer(res.answer);
+    } else {
+      setQuickAnswer('Javob topilmadi.');
+    }
+  };
+
+  // Object management handlers
+  const handleAddObject = async (name: string) => {
+    try {
+      const res = await fetch('/api/objects/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setObjects((prev) => [...prev, data.object]);
+        fetchSceneData();
+      }
+    } catch (err) {
+      console.warn('[App] Add error:', err);
+    }
+  };
+
+  const handleRemoveObject = async (id: string) => {
+    try {
+      await fetch(`/api/objects/${id}`, { method: 'DELETE' });
+      setObjects((prev) => prev.filter((o) => o.id !== id));
+      if (selectedObjectId === id) setSelectedObjectId(null);
+      fetchSceneData();
+    } catch (err) {
+      console.warn('[App] Remove error:', err);
+    }
+  };
+
+  const handleResetScene = async () => {
+    try {
+      const res = await fetch('/api/objects/reset', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setObjects(data.objects || []);
+        setSelectedObjectId(null);
+        fetchSceneData();
+      }
+    } catch (err) {
+      console.warn('[App] Reset error:', err);
+    }
+  };
+
+  const visibleObjects = objects.filter((o) => o.state !== 'occluded');
+
+  return (
+    <div className="min-h-screen bg-transparent text-slate-100 flex flex-col antialiased selection:bg-blue-500 selection:text-white pb-24 font-sans">
+      
+      {/* BACKGROUND CAMERA LAYER - Always rendered */}
+      <LiveCameraView
+        ref={cameraRef}
+        onObjectsDetected={handleObjectsDetected}
+        selectedObjectId={selectedObjectId}
+        onSelectObject={setSelectedObjectId}
+        onCaptureAnalyze={handleCaptureAnalyze}
+        isAiAnalyzing={isAiAnalyzing}
+      />
+
+      {/* Top Mobile-Friendly Header */}
+      <header className="fixed top-0 inset-x-0 z-30 bg-gradient-to-b from-black/90 via-black/50 to-transparent pt-safe px-4 py-4 pb-8 pointer-events-none">
+        <div className="max-w-2xl mx-auto flex items-center justify-between pointer-events-auto">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-blue-500/25">
+              <Sparkles className="w-4 h-4" />
+            </div>
+            <div>
+              <h1 className="text-sm font-bold tracking-tight text-white flex items-center gap-1.5">
+                SMARTROOM AI
+              </h1>
+              <p className="text-[10px] text-slate-400 font-medium">
+                Physical AI Scene Understanding
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsCapstoneModalOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/30 text-[11px] font-bold text-blue-400 hover:bg-blue-500/20 transition-colors"
+            >
+              <GraduationCap className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Capstone G1</span>
+            </button>
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900 border border-slate-800 text-[11px] font-medium text-slate-300">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span>{visibleObjects.length} ta faol</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content Overlay Area */}
+      <main className="fixed bottom-[80px] inset-x-0 z-20 pointer-events-none flex flex-col justify-end px-4 mb-2">
+        <div className="max-w-2xl w-full mx-auto max-h-[65vh] overflow-y-auto scrollbar-none pointer-events-auto rounded-3xl">
+        {/* TAB 1: CAMERA (Quick Tools Overlay) */}
+        {activeTab === 'camera' && (
+          <div className="flex flex-col gap-4">
+            {/* Quick Detected Objects Strip */}
+            <div className="flex items-center gap-2 overflow-x-auto py-2 scrollbar-none px-2 rounded-2xl bg-black/20 backdrop-blur-md">
+              {visibleObjects.length === 0 ? (
+                <div className="text-xs text-slate-200 py-1 font-medium px-2 shadow-sm drop-shadow-md">
+                  Kamerani telefon, noutbuk, stul yoki boshqa buyumlarga qarating...
+                </div>
+              ) : (
+                visibleObjects.map((obj) => (
+                  <button
+                    key={obj.id}
+                    type="button"
+                    onClick={() =>
+                      setSelectedObjectId(selectedObjectId === obj.id ? null : obj.id)
+                    }
+                    style={{
+                      borderColor: selectedObjectId === obj.id ? obj.color : 'transparent',
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900 border text-xs font-semibold shrink-0 transition-all ${
+                      selectedObjectId === obj.id
+                        ? 'ring-2 ring-white/50 text-white'
+                        : 'text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <span
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: obj.color }}
+                    />
+                    <span className="uppercase">{obj.name}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      {Math.round(obj.confidence * 100)}%
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+
+            {/* Quick Question Chips */}
+            <div className="p-4 rounded-3xl bg-slate-900/85 backdrop-blur-xl border border-slate-700/60 shadow-2xl space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center gap-1.5">
+                  <Compass className="w-3.5 h-3.5 text-blue-400" />
+                  Tezkor Fazoviy Savol
+                </span>
+                <span className="text-[11px] text-slate-400">1 bosishda hisoblash</span>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {[
+                  'Eng yaqin narsa nima?',
+                  'Telefon qayerda?',
+                  'Noutbuk ustidami?',
+                  'Xonada nimalar bor?',
+                ].map((q, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => handleQuickQuestion(q)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-blue-500/50 hover:bg-slate-800 active:scale-95 text-slate-200 text-xs font-medium transition-all"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+
+              {quickAnswer && (
+                <div className="mt-2 p-3 rounded-xl bg-blue-950/30 border border-blue-500/30 text-xs text-blue-100 font-medium leading-relaxed animate-fadeIn">
+                  {quickAnswer}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 2: OBJECTS */}
+        {activeTab === 'objects' && (
+          <div className="p-4 rounded-3xl bg-slate-900/90 backdrop-blur-xl border border-slate-700/60 shadow-2xl">
+            <TrackedObjectsPanel
+              objects={objects}
+              selectedObjectId={selectedObjectId}
+              onSelectObject={setSelectedObjectId}
+              onAddObject={handleAddObject}
+              onRemoveObject={handleRemoveObject}
+              onResetScene={handleResetScene}
+            />
+          </div>
+        )}
+
+        {/* TAB 3: SCENE GRAPH */}
+        {activeTab === 'graph' && (
+          <div className="p-4 rounded-3xl bg-slate-900/90 backdrop-blur-xl border border-slate-700/60 shadow-2xl">
+            <SceneGraphPanel
+              sceneGraph={sceneGraph}
+              objects={objects}
+              onSelectObject={setSelectedObjectId}
+            />
+          </div>
+        )}
+
+        {/* TAB 4: CHAT / QUERY */}
+        {activeTab === 'chat' && (
+          <div className="p-4 rounded-3xl bg-slate-900/90 backdrop-blur-xl border border-slate-700/60 shadow-2xl">
+            <QueryConsole onRunQuery={handleRunQuery} />
+          </div>
+        )}
+        </div>
+      </main>
+
+      {/* Gemini AI Multimodal Analysis Modal / Drawer */}
+      {aiAnalysisResult && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-4 animate-fadeIn">
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-blue-400">
+                <Sparkles className="w-5 h-5" />
+                <h3 className="font-bold text-base text-slate-100">
+                  Gemini AI Vizual Tahlili
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAiAnalysisResult(null)}
+                className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {aiAnalysisResult.summaryUz && (
+              <p className="text-sm text-slate-200 leading-relaxed bg-slate-950 p-4 rounded-2xl border border-slate-800">
+                {aiAnalysisResult.summaryUz}
+              </p>
+            )}
+
+            {aiAnalysisResult.objects && aiAnalysisResult.objects.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-xs font-bold text-slate-400 uppercase">
+                  Aniqlangan Obyektlar ({aiAnalysisResult.objects.length})
+                </h4>
+                <div className="grid grid-cols-2 gap-2">
+                  {aiAnalysisResult.objects.map((o: any, idx: number) => (
+                    <div
+                      key={idx}
+                      className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-200"
+                    >
+                      <span className="font-bold uppercase text-blue-400">{o.name}</span>
+                      <div className="text-[10px] text-slate-400">
+                        {Math.round((o.confidence || 0.9) * 100)}% aniqlik
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {aiAnalysisResult.spatialRelations &&
+              aiAnalysisResult.spatialRelations.length > 0 && (
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase">
+                    Fazoviy Munosabatlar
+                  </h4>
+                  <div className="space-y-1.5">
+                    {aiAnalysisResult.spatialRelations.map((r: any, idx: number) => (
+                      <div
+                        key={idx}
+                        className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300"
+                      >
+                        {r.description || `${r.source} ${r.predicate} ${r.target}`}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            <button
+              type="button"
+              onClick={() => setAiAnalysisResult(null)}
+              className="w-full py-3 rounded-2xl bg-blue-600 hover:bg-blue-500 active:scale-95 text-white text-sm font-semibold transition-all"
+            >
+              Yopish
+            </button>
+          </div>
+        </div>
+      )}
+
+      {isCapstoneModalOpen && (
+        <CapstoneInfoModal onClose={() => setIsCapstoneModalOpen(false)} />
+      )}
+
+      {/* Sticky Mobile Bottom Navigation */}
+      <BottomNavbar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        objectsCount={visibleObjects.length}
+      />
+    </div>
+  );
+}
